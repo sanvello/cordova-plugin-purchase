@@ -401,13 +401,15 @@ public class PurchasePlugin
     try {
       final int code = result.getResponseCode();
       if (code == BillingResponseCode.OK) {
-        Log.d(mTag, "onPurchasesUpdated() -> Success");
-        for (Purchase p : purchases) {
-          mPurchases.add(0, p);
+        if (purchases != null) {
+          Log.d(mTag, "onPurchasesUpdated() -> Success");
+          for (Purchase p : purchases) {
+            mPurchases.add(0, p);
+          }
+          callSuccess();
+          sendToListener("purchasesUpdated", new JSONObject()
+              .put("purchases", toJSON(purchases)));
         }
-        callSuccess();
-        sendToListener("purchasesUpdated", new JSONObject()
-            .put("purchases", toJSON(purchases)));
       }
       else if (code == BillingResponseCode.USER_CANCELED) {
         Log.w(mTag, "onPurchasesUpdated() -> "
