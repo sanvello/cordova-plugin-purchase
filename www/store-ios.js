@@ -656,12 +656,7 @@ store.Product.prototype.verify = function() {
                 that.trigger("updated");
             }
             if (success) {
-                if (that.expired)
-                    that.set("expired", false);
                 store.log.debug("verify -> success: " + JSON.stringify(data));
-                store.utils.callExternal('verify.success', successCb, that, data);
-                store.utils.callExternal('verify.done', doneCb, that);
-                that.trigger("verified");
 
                 // Process the list of products that are ineligible
                 // for introductory prices.
@@ -691,13 +686,24 @@ store.Product.prototype.verify = function() {
                     });
                 }
                 if (data && data.collection && data.collection.forEach) {
+                    // new behavior: the validator sets products state in the collection
+                    // (including expiry status)
                     data.collection.forEach(function(purchase) {
                         var p = store.get(purchase.id);
                         if (p) {
                             p.set(purchase);
                         }
                     });
+
                 }
+                else if (that.expired) {
+                    // old behavior: a valid receipt means the subscription isn't expired.
+                    that.set("expired", false);
+                }
+
+                store.utils.callExternal('verify.success', successCb, that, data);
+                store.utils.callExternal('verify.done', doneCb, that);
+                that.trigger("verified");
             }
             else {
                 store.log.debug("verify -> error: " + JSON.stringify(data));
@@ -722,7 +728,7 @@ store.Product.prototype.verify = function() {
                 else if (nRetry < 4) {
                     // It failed... let's try one more time. Maybe the appStoreReceipt wasn't updated yet.
                     nRetry += 1;
-                    delay(this, tryValidation, 1500 * nRetry * nRetry);
+                    delay(this, tryValidation, (1500 + nRetry * 1000) * nRetry * nRetry);
                 }
                 else {
                     store.log.debug("validation failed, no retrying, trigger an error");
@@ -1303,6 +1309,7 @@ var callbackId = 0;
 ///       - `IMMEDIATE_AND_CHARGE_PRORATED_PRICE` - Replacement takes effect immediately, and the billing cycle remains the same.
 ///       - `IMMEDIATE_WITHOUT_PRORATION` - Replacement takes effect immediately, and the new price will be charged on next recurrence time.
 ///       - `IMMEDIATE_WITH_TIME_PRORATION` - Replacement takes effect immediately, and the remaining time will be prorated and credited to the user.
+///       - `IMMEDIATE_AND_CHARGE_FULL_PRICE` - The subscription is upgraded or downgraded and the user is charged full price for the new entitlement immediately. The remaining value from the previous subscription is either carried over for the same entitlement, or prorated for time when switching to a different entitlement.
 ///    - `discount`, a object that describes the discount to apply with the purchase (iOS only):
 ///       - `id`, discount identifier
 ///       - `key`, key identifier
@@ -1332,7 +1339,7 @@ store.order = function(pid, additionalData) {
     }
 
     var a; // short name for additionalData
-    if (additionalData) {
+    if (additionalData && typeof additionalData === 'object') {
         a = p.additionalData = Object.assign({}, additionalData);
     }
     else {
@@ -1671,8 +1678,9 @@ function runValidation() {
 
       // Post
       store.utils.ajax({
-          url: store.validator,
+          url: (typeof store.validator === 'string') ? store.validator : store.validator.url,
           method: 'POST',
+          customHeaders: (typeof store.validator === 'string') ? null : store.validator.headers,
           data: data,
           success: function(data) {
               store.log.debug("validator success, response: " + JSON.stringify(data));
@@ -1820,7 +1828,7 @@ store._validator = function(product, callback, isPrepared) {
         return;
     }
 
-    if (typeof store.validator === 'string') {
+    if (typeof store.validator === 'string' || typeof store.validator === 'object') {
         validationRequests.push({
             product: product,
             callback: callback
@@ -2150,6 +2158,39 @@ store.refresh = function() {
 /// ```
 ///
 
+///
+/// ## <a name="redeem"></a>*store.redeem()*
+///
+/// Redeems a promotional offer from within the app.
+///
+/// * On iOS, calling `store.redeem()` will open the Code Redemption Sheet.
+///   * See the [offer codes documentation](https://developer.apple.com/app-store/subscriptions/#offer-codes) for details.
+/// * This call does nothing on Android and Microsoft UWP.
+///
+/// ##### example usage
+///
+/// ```js
+///    store.redeem();
+/// ```
+
+///
+/// ## <a name="launchPriceChangeConfirmationFlow"></a>*store.launchPriceChangeConfirmationFlow(callback)*
+///
+/// Android only: display a generic dialog notifying the user of a subscription price change.
+///
+/// See https://developer.android.com/google/play/billing/subscriptions#price-change-communicate
+///
+/// * This call does nothing on iOS and Microsoft UWP.
+///
+/// ##### example usage
+///
+/// ```js
+///    store.launchPriceChangeConfirmationFlow(function(status) {
+///      if (status === "OK") { /* approved */ }
+///      if (status === "UserCanceled") { /* dialog canceled by user */ }
+///    }));
+/// ```
+
 (function(){
 
 
@@ -2366,7 +2407,18 @@ store.Product.prototype.set = function(key, value) {
             value = new Date(value);
         }
         if (key === 'isExpired' && value === true && this.owned) {
+            this.set('owned', false);
             this.set('state', store.VALID);
+            this.set('expired', true);
+            this.trigger('expired');
+        }
+        if (key === 'isExpired' && value === false && !this.owned) {
+            this.set('expired', false);
+            if (this.state !== store.APPROVED) {
+                // user have to "finish()" to own an approved transaction
+                // in other cases, we can safely set the OWNED state.
+                this.set('state', store.OWNED);
+            }
         }
         this[key] = value;
         if (key === 'state')
@@ -2796,6 +2848,9 @@ store.utils = {
     /// * `data`: body of your request
     ///
     ajax: function(options) {
+        if (typeof window !== 'undefined' && window.cordova && window.cordova.plugin && window.cordova.plugin.http) {
+            return store.utils.ajaxWithHttpPlugin(options);
+        }
         var doneCb = function(){};
         var xhr = new XMLHttpRequest();
         xhr.open(options.method || 'POST', options.url, true);
@@ -2818,6 +2873,12 @@ store.utils = {
             if (xhr.readyState === 4)
                 store.utils.callExternal('ajax.done', doneCb);
         };
+        if (options.customHeaders) {
+            Object.keys(options.customHeaders).forEach(function (header) {
+                store.log.debug('ajax -> adding custom header: ' + header );
+                xhr.setRequestHeader( header, options.customHeaders[header]);
+            });
+        }
         xhr.setRequestHeader("Accept", "application/json");
         store.log.debug('ajax -> send request to ' + options.url);
         if (options.data) {
@@ -2830,6 +2891,41 @@ store.utils = {
         return {
             done: function(cb) { doneCb = cb; return this; }
         };
+    },
+
+    ajaxWithHttpPlugin: function(options) {
+        var doneCb = function(){};
+        var ajaxOptions = {
+            method: (options.method || 'get').toLowerCase(),
+            data: options.data,
+            serializer: 'json',
+            // responseType: 'json',
+        };
+        if (options.customHeaders) {
+            store.log.debug('ajax[http] -> adding custom headers: ' + JSON.stringify(options.customHeaders));
+            ajaxOptions.headers = options.customHeaders;
+        }
+        store.log.debug('ajax[http] -> send request to ' + options.url);
+        cordova.plugin.http.sendRequest(options.url, ajaxOptions, ajaxDone, ajaxDone);
+        return {
+            done: function(cb) { doneCb = cb; return this; }
+        };
+        function ajaxDone(response) {
+            try {
+                if (response.status == 200) {
+                    store.utils.callExternal('ajax.success', options.success, JSON.parse(response.data));
+                }
+                else {
+                    store.log.warn("ajax[http] -> request to " + options.url + " failed with status " + response.status + " (" + response.error + ")");
+                    store.utils.callExternal('ajax.error', options.error, response.status, response.error);
+                }
+            }
+            catch (e) {
+                store.log.warn("ajax[http] -> request to " + options.url + " failed with an exception: " + e.message);
+                if (options.error) store.utils.callExternal('ajax.error', options.error, 417, e.message);
+            }
+            store.utils.callExternal('ajax.done', doneCb);
+        }
     },
 
     ///
@@ -2926,7 +3022,7 @@ if (typeof Object.assign != 'function') {
     };
 }
 
-store.version = '10.3.0';
+store.version = '11.0.0';
 /*
  * A plugin to enable iOS In-App Purchases.
  *
@@ -3094,6 +3190,10 @@ InAppPurchase.prototype.manageSubscriptions = function () {
 
 InAppPurchase.prototype.manageBilling = function () {
     exec('manageBilling', []);
+};
+
+InAppPurchase.prototype.presentCodeRedemptionSheet = function () {
+    exec('presentCodeRedemptionSheet', []);
 };
 
 /*
@@ -3882,7 +3982,7 @@ function storekitError(errorCode, errorText, options) {
 
     // when loading failed, trigger "error" for each of
     // the registered products.
-    if (errorCode === storekit.ERR_LOAD) {
+    if (errorCode === store.ERR_LOAD) {
         for (i = 0; i < store.products.length; ++i) {
             p = store.products[i];
             p.trigger("error", [new store.Error({
@@ -3895,7 +3995,7 @@ function storekitError(errorCode, errorText, options) {
     // a purchase was cancelled by the user:
     // - trigger the "cancelled" event
     // - set the product back to its original state
-    if (errorCode === storekit.ERR_PAYMENT_CANCELLED) {
+    if (errorCode === store.ERR_PAYMENT_CANCELLED) {
         p = store.get(options.productId);
         if (p) {
             p.trigger("cancelled");
@@ -3939,6 +4039,18 @@ store.manageSubscriptions = function() {
 
 store.manageBilling = function() {
     storekit.manageBilling();
+};
+
+store.launchPriceChangeConfirmationFlow = function(callback) {};
+
+/// store.redeemCode({ type: 'subscription_offer_code' });
+store.redeem = function() {
+    // By default, we call presentCodeRedemptionSheet.
+    // This is the only supported option at the moment.
+    // options might be used if multiple types of offer codes are available.
+    // options = options || {};
+    // if (options.type == 'offer code')
+    return storekit.presentCodeRedemptionSheet();
 };
 
 // Restore purchases.
@@ -3990,7 +4102,10 @@ function syncWithAppStoreReceipt(appStoreReceipt) {
     var usedIntroOffer = false;
     if (appStoreReceipt && appStoreReceipt.in_app && appStoreReceipt.in_app.forEach) {
         appStoreReceipt.in_app.forEach(function(transaction) {
-            lastTransactions[transaction.product_id] = transaction;
+            var existing = lastTransactions[transaction.product_id];
+            if (existing && +existing.purchase_date_ms < +transaction.purchase_date_ms) {
+                lastTransactions[transaction.product_id] = transaction;
+            }
         });
     }
     Object.values(lastTransactions).forEach(function(transaction) {
@@ -4161,8 +4276,13 @@ store.update = function(successCb, errorCb, skipLoad) {
 setInterval(function() {
     var now = +new Date();
     // finds a product that is both owned and expired more than 1 minute ago
+    // but less that 1h ago (it's only meant for detecting interactive renewals)
     var expired = store.products.find(function(product) {
-        return product.owned && now > +product.expiryDate + 60000;
+        var ONE_MINUTE = 60000;
+        var ONE_HOUR = 3600000;
+        return product.owned &&
+            (now > +product.expiryDate + ONE_MINUTE) &&
+            (now < +product.expiryDate + ONE_HOUR);
     });
     // if one is found, refresh purchases using the validator (if setup)
     if (expired) {
