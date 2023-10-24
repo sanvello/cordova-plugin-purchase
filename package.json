@@ -1,6 +1,6 @@
 {
   "name": "cordova-plugin-purchase",
-  "version": "11.0.0",
+  "version": "13.8.2",
   "description": "Cordova Purchase plugin for iOS, Android, Windows (AppStore, Play, UWP)",
   "cordova": {
     "id": "cordova-plugin-purchase",
@@ -26,11 +26,14 @@
     "ios",
     "android",
     "play",
-    "appstore"
+    "appstore",
+    "iaptic",
+    "fovea"
   ],
   "scripts": {
-    "test": "make test-js",
-    "coverage": "make test-js-coverage"
+    "test": "cd tests && jest",
+    "typedoc": "typedoc --hideGenerator --excludePrivate --excludeProtected --excludeInternal --disableSources --readme src/ts/README.md --hideBreadcrumbs true --hideInPageTOC false --out api --pretty --plugin typedoc-plugin-markdown --theme markdown --basePath src/ts src/ts/store.ts",
+    "typedoc-dev": "typedoc --hideGenerator --readme src/ts/README.md --out api-dev --pretty --plugin typedoc-plugin-markdown --theme markdown --basePath src/ts src/ts/store.ts"
   },
   "author": "Jean-Christophe Hoelt <hoelt@fovea.cc>",
   "license": "MIT",
@@ -39,18 +42,15 @@
   },
   "homepage": "https://github.com/j3k0/cordova-plugin-purchase",
   "devDependencies": {
-    "acorn": "^6.3.0",
-    "babel-eslint": "^10.0.3",
-    "coveralls": "^3.0.6",
-    "eslint": "^5.16.0",
-    "eslint-config-defaults": "^9.0.0",
-    "eslint-plugin-import": "^2.18.2",
-    "eslint-plugin-react": "^7.14.3",
-    "istanbul": "^0.4.5",
-    "jshint": "^2.10.2",
-    "mocha": "^6.2.0",
-    "preprocessor": "^1.4.0",
-    "uglify-js": "^3.6.0"
+    "@types/jest": "^29.5.4",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "typedoc": "^0.23.15",
+    "typedoc-github-wiki-theme": "^1.0.1",
+    "typedoc-plugin-markdown": "^3.13.6",
+    "typescript": "^4.7.4"
   },
-  "types": "./src/js/index.d.ts"
+  "main": "./www/store.js",
+  "types": "./www/store.d.ts"
 }
